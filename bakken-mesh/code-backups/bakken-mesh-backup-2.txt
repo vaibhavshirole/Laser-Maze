@@ -1,0 +1,159 @@
+#include "painlessMesh.h"
+
+#define   MESH_PREFIX     "username"
+#define   MESH_PASSWORD   "password"
+#define   MESH_PORT       5555
+
+#define DEVICE            3       //1-laser, 2-photoresistor, 3-button
+#define ANALOG_THRESHOLD  4000    //adjust how might brightness needed to trip the alarm
+
+#define BUTTON            25      //GPIO25
+int buttonPushCounter = 0;        // counter for the number of button presses
+int buttonState = 0;              // current state of the button, 0 means on here. Its confusing
+int lastButtonState = 0;          // previous state of the button, 0 means on here. Its confusing
+
+#define LASER1_PIN        33      //enable gpio
+int toggleState=1;                //laser node knows the button as 1 initially
+int laserState=1;                 //laser node knows the beams as healthy initally
+
+#define LIGHT_SENSOR_PIN  36      //enable gpio
+
+
+Scheduler userScheduler; // to control your personal task
+painlessMesh  mesh;
+
+// User stub
+void sendMessage() ; // Prototype so PlatformIO doesn't complain
+Task taskSendMessage( TASK_SECOND * 1 , TASK_FOREVER, &sendMessage );
+
+//Laser node: generic message 
+//Photo resistor node: "healthy" or "broken" status string
+void sendMessage() {
+  if(DEVICE == 1){
+    String msg = "Hi from laser node";
+    //msg += mesh.getNodeId();
+    mesh.sendBroadcast( msg );
+    taskSendMessage.setInterval( random( TASK_SECOND * 1, TASK_SECOND * 5 ));
+  }
+  else if(DEVICE == 2){
+    int analogValue = analogRead(LIGHT_SENSOR_PIN);
+    if(analogValue > ANALOG_THRESHOLD){ //if laser on photoresistor and state of system is on
+      String msg = "healthy";
+      mesh.sendBroadcast(msg);
+      taskSendMessage.setInterval(random( TASK_SECOND * 1, TASK_SECOND * 5 ));
+    }else{
+      String msg = "broken";
+      mesh.sendBroadcast(msg);
+      taskSendMessage.setInterval(random( TASK_SECOND * 1, TASK_SECOND * 5 ));    
+    }
+  }
+  else if(DEVICE == 3){
+    buttonState = digitalRead(BUTTON);// check if the pushbutton is pressed. If it is, the buttonState is HIGH:
+
+    // check if the pushbutton is pressed. If it is, the buttonState is HIGH:
+    if (buttonState != lastButtonState) {
+      // if the state has changed, increment the counter
+      if (buttonState == HIGH) {
+        // if the current state is HIGH then the button went from off to on:
+        //Serial.println("on");
+        buttonPushCounter++;
+      } else {
+        // if the current state is LOW then the button went from on to off:
+        //Serial.println("off");
+      }
+      // Delay a little bit to avoid bouncing
+      delay(20);
+    }
+    // save the current state as the last state, for next time through the loop
+    lastButtonState = buttonState;
+    
+    if (buttonPushCounter % 2 == 0) {
+      //broadcast on
+      String msg = "on";
+      mesh.sendBroadcast(msg);
+      taskSendMessage.setInterval(TASK_SECOND*0.01);
+    } else {
+      //broadcast off
+      String msg = "off";
+      mesh.sendBroadcast(msg);
+      taskSendMessage.setInterval(TASK_SECOND*0.01);
+    }
+
+      
+  }
+
+  
+}
+
+// Needed for painless library
+// Laser node: Turns on or off lasers depending on status string
+// Photo resistor node: Replies with generic data received printout 
+void receivedCallback( uint32_t from, String &msg ) {
+  if(DEVICE == 1){
+    //Serial.printf("startHere: Received from %u msg=%s\n", from, msg.c_str());    
+    if(msg.compareTo("off") == 0){
+      //turn off lasers
+      Serial.printf("Laser system disabled (button state)\n");
+    }else if(msg.compareTo("on") == 0){
+      //turn on lasers if not already on 
+      Serial.printf("Laser system on and armed (button state)\n");
+    } 
+    
+    if(msg.compareTo("broken") == 0){
+      //turn off lasers
+      Serial.printf("Laser system disabled (beam broken)\n");
+    }else if(msg.compareTo("healthy") == 0){
+      //turn on lasers if not already on 
+      Serial.printf("Laser system on and armed (beam healthy)\n");
+    } 
+  }else if(DEVICE == 2){
+    Serial.printf("startHere: Received from %u msg=%s\n", from, msg.c_str()); 
+    
+  }else if(DEVICE == 3){
+    Serial.printf("startHere: Received from %u msg=%s\n", from, msg.c_str()); 
+  }
+}
+
+void newConnectionCallback(uint32_t nodeId) {
+    Serial.printf("--> startHere: New Connection, nodeId = %u\n", nodeId);
+}
+
+void changedConnectionCallback() {
+  Serial.printf("Changed connections\n");
+}
+
+void nodeTimeAdjustedCallback(int32_t offset) {
+    Serial.printf("Adjusted time %u. Offset = %d\n", mesh.getNodeTime(),offset);
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  if(DEVICE == 1){
+    //if laser node, initialize lasers to on
+    pinMode(LASER1_PIN, OUTPUT);    //set laser gpio to output mode
+    digitalWrite(LASER1_PIN, LOW);  //set laser on 
+  }
+
+  if(DEVICE == 3){
+    pinMode(BUTTON, INPUT);         //finish setup for button 
+  }
+
+//mesh.setDebugMsgTypes( ERROR | MESH_STATUS | CONNECTION | SYNC | COMMUNICATION | GENERAL | MSG_TYPES | REMOTE ); // all types on
+  mesh.setDebugMsgTypes( ERROR | STARTUP );  // set before init() so that you can see startup messages
+
+  mesh.init( MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT );
+  mesh.onReceive(&receivedCallback);
+  mesh.onNewConnection(&newConnectionCallback);
+  mesh.onChangedConnections(&changedConnectionCallback);
+  mesh.onNodeTimeAdjusted(&nodeTimeAdjustedCallback);
+
+  userScheduler.addTask( taskSendMessage );
+  taskSendMessage.enable();
+}
+
+void loop() {
+  // it will run the user scheduler as well
+  mesh.update();
+
+}
